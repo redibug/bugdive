@@ -1,7 +1,7 @@
 # BUGDIVE.EXE — design notes (v0.1)
 
 ## The fantasy
-Battle Network's jack-in, as a roguelike. You are Bugchan, diving.
+Battle Network's dive, as a roguelike. You are Bugchan, diving.
 Depth is danger: same verb set, meaner rooms. The run ends in
 deletion; the score is how deep + how much you deleted.
 

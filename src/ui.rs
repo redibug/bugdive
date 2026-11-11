@@ -421,7 +421,7 @@ fn draw_game_over(frame: &mut Frame, area: Rect, g: &Game) {
         Line::from(format!("  Viruses deleted: {}   Turns: {}", g.kills, g.turn)),
         Line::from(format!("  Zenny banked: {}   BugFrags: {}", g.zenny, g.bugfrags)),
         Line::from(""),
-        Line::from(Span::styled("  R: re-jack in      Q: jack out", Style::default().fg(CYAN))),
+        Line::from(Span::styled("  R: log in again    Q: log out", Style::default().fg(CYAN))),
     ];
     let p = Paragraph::new(lines).block(
         Block::default()

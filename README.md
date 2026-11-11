@@ -2,7 +2,7 @@
 
 A cyberspace roguelike in the terminal. No images — pure ratatui cells.
 
-You are **Bugchan**, a living computer bug, jacked into the net.
+You are **Bugchan**, a living computer bug, logged into the net.
 Every dive takes you one layer deeper, and the deeper you go,
 the nastier the viruses get. Your weapons: a humble BugBuster
 (bump into things) and a folder of **battle chips**.
@@ -55,8 +55,8 @@ Viruses move after every turn you spend. Bumping a wall is free.
 | `Tab` or `C` | Open the chip folder (sidebar focus) |
 | `.` or `Space` (map) | Wait a turn |
 | `>` (on a dive point) | Descend to the next depth |
-| `Q` / `Ctrl-C` | Jack out (quit) |
-| `R` (when deleted) | Re-jack in — new run |
+| `Q` / `Ctrl-C` | Log out (quit) |
+| `R` (when deleted) | Log in again — new run |
 
 ### Battle chips & the discard rule
 

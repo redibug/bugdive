@@ -87,7 +87,7 @@ impl Game {
         };
         game.new_floor(true);
         game.draw_to_full();
-        game.log("Jack in! Bugchan, executing.");
+        game.log("Log in! Bugchan, executing.");
         game.log("Dive deep, delete viruses, don't get deleted.");
         game.log("Tab opens your chip folder. > on the dive point goes deeper.");
         game
@@ -452,7 +452,7 @@ impl Game {
         if self.hp <= 0 {
             self.hp = 0;
             self.game_over = true;
-            self.log("BUGCHAN DELETED... jack out failed. Press R to re-jack in.");
+            self.log("BUGCHAN DELETED... log out failed. Press R to log in again.");
         }
     }
 
