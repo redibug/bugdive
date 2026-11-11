@@ -204,15 +204,7 @@ impl Game {
         }
     }
 
-    /// Indices of viruses standing on any of `tiles`.
-    fn viruses_in(&self, tiles: &[(i32, i32)]) -> Vec<usize> {
-        self.viruses
-            .iter()
-            .enumerate()
-            .filter(|(_, v)| tiles.contains(&v.pos))
-            .map(|(i, _)| i)
-            .collect()
-    }
+
 
     // ---------- floor ----------
 
@@ -382,16 +374,29 @@ impl Game {
             | Effect::Bomb { amount, .. }
             | Effect::Blast { amount, .. } => {
                 let tiles = self.chip_tiles(self.hand[idx]);
-                let targets = self.viruses_in(&tiles);
-                if targets.is_empty() {
+                // Multi-target: collect POSITIONS, never indices.
+                // hit_virus removes dead viruses from the vec, which
+                // shifts every later index — hitting by stale index
+                // made the second sword victim somebody else entirely
+                // (Mel's bug report, 2026-11-11). Positions are stable
+                // for the whole resolution, and each lookup is fresh.
+                let hit_positions: Vec<(i32, i32)> = self
+                    .viruses
+                    .iter()
+                    .filter(|v| tiles.contains(&v.pos))
+                    .map(|v| v.pos)
+                    .collect();
+                if hit_positions.is_empty() {
                     self.log(format!(
                         "{name}: no virus in the area. Aim with WASD / Shift+arrows. Chip kept."
                     ));
                     false
                 } else {
                     self.set_flash(tiles);
-                    for t in targets {
-                        self.hit_virus(t, amount, name);
+                    for p in hit_positions {
+                        if let Some(v) = self.virus_at(p) {
+                            self.hit_virus(v, amount, name);
+                        }
                     }
                     true
                 }
@@ -752,25 +757,66 @@ mod tests {
         assert_eq!(g.hand.len(), HAND_SIZE);
     }
 
-    #[test]
-    fn wideswd_hits_the_front_arc() {
-        let mut g = Game::new(11);
-        let Some((x, y)) = open_row(&g, 5) else { return };
-        // Need the front-diagonal tiles to be floor too.
-        if g.sector.tile(x + 3, y - 1) != Tile::Floor || g.sector.tile(x + 3, y + 1) != Tile::Floor {
-            return;
+    /// Carve a guaranteed-open staging box into the sector so combat
+    /// tests are deterministic (no early-return vacuous passes).
+    fn carve(g: &mut Game, x0: i32, y0: i32, x1: i32, y1: i32) {
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                g.sector.tiles[y as usize][x as usize] = Tile::Floor;
+            }
         }
+    }
+
+    /// Stage: player at (22,14) facing east in a carved 18..=32 x 11..=17 box.
+    fn staged() -> Game {
+        let mut g = Game::new(11);
+        carve(&mut g, 18, 11, 32, 17);
         g.viruses.clear();
-        g.player = (x + 2, y);
+        g.sector.items.clear();
+        g.player = (22, 14);
         g.face(1, 0);
-        g.viruses.push(Virus::new(2, (x + 3, y), 1)); // front
-        g.viruses.push(Virus::new(2, (x + 3, y + 1), 1)); // front-diagonal
-        g.viruses.push(Virus::new(2, (x + 1, y), 1)); // behind
-        g.hand[0] = 4; // WideSwd, 70 DMG arc — Metts (55) die from it
+        g
+    }
+
+    #[test]
+    fn wideswd_hits_the_whole_front_arc() {
+        let mut g = staged();
+        g.viruses.push(Virus::new(2, (23, 14), 1)); // front — Mett 55
+        g.viruses.push(Virus::new(2, (23, 13), 1)); // front-diagonal
+        g.viruses.push(Virus::new(2, (23, 15), 1)); // front-diagonal
+        g.viruses.push(Virus::new(5, (21, 14), 1)); // behind: NullWraith 100 HP
+        g.hand[0] = 4; // WideSwd, 70 DMG arc
         assert!(g.use_chip(0));
-        assert_eq!(g.kills, 2, "front + diagonal deleted, behind survives");
+        assert_eq!(g.kills, 3, "all three arc viruses deleted");
         assert_eq!(g.viruses.len(), 1);
-        assert_eq!(g.viruses[0].pos, (x + 1, y));
+        assert_eq!(g.viruses[0].hp, 100, "the virus behind is untouched");
+    }
+
+    #[test]
+    fn longswd_pierces_a_line_of_two() {
+        // Mel's bug report: LongSwd on a line of two killed only the front.
+        let mut g = staged();
+        g.viruses.push(Virus::new(2, (23, 14), 1)); // front — Mett 55
+        g.viruses.push(Virus::new(2, (24, 14), 1)); // behind it — Mett 55
+        g.viruses.push(Virus::new(5, (22, 12), 1)); // bystander: NullWraith 100 HP
+        g.hand[0] = 5; // LongSwd, 110 DMG, front x2
+        assert!(g.use_chip(0));
+        assert_eq!(g.kills, 2, "BOTH viruses in the line die");
+        assert_eq!(g.viruses.len(), 1);
+        assert_eq!(g.viruses[0].hp, 100, "bystander untouched (not hit by index shift)");
+    }
+
+    #[test]
+    fn minibomb_splash_hits_everything_in_the_box() {
+        let mut g = staged();
+        g.viruses.push(Virus::new(2, (25, 14), 1)); // landing tile (3 east)
+        g.viruses.push(Virus::new(2, (26, 15), 1)); // splash corner
+        g.viruses.push(Virus::new(5, (28, 14), 1)); // outside the 3x3: NullWraith
+        g.hand[0] = 6; // MiniBomb, 60 DMG, bomb@3
+        assert!(g.use_chip(0));
+        assert_eq!(g.kills, 2, "landing + splash both deleted");
+        assert_eq!(g.viruses.len(), 1);
+        assert_eq!(g.viruses[0].hp, 100, "outside the blast: untouched");
     }
 
     #[test]
