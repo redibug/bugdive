@@ -1,0 +1,13 @@
+[package]
+name = "bugdive"
+version = "0.1.0"
+edition = "2021"
+description = "BUGDIVE.EXE — a cyberspace roguelike. Play as Bugchan, dive the net, delete viruses, manage your battle-chip hand."
+license = "MIT"
+
+[dependencies]
+ratatui = "0.30.2"
+crossterm = "0.29"
+
+[profile.release]
+opt-level = 3
