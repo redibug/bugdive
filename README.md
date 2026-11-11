@@ -49,7 +49,8 @@ Viruses move after every turn you spend. Bumping a wall is free.
 
 | Key | What it does |
 |---|---|
-| Arrows / `hjkl` / WASD | Move (diagonals: `y` `u` `b` `n`) |
+| Arrows / `hjkl` | Move (diagonals: `y` `u` `b` `n`) |
+| `WASD` / `Shift`+arrows | Change facing — **free**, no turn, works with the folder open too |
 | Bump a virus | BugBuster attack (10 DMG) |
 | `1`–`5` | Quick-use the chip in that slot |
 | `Tab` or `C` | Open the chip folder (sidebar focus) |
@@ -63,8 +64,17 @@ Viruses move after every turn you spend. Bumping a wall is free.
 - Your hand is always **5 chips**, drawn from a 31-chip folder.
   Chips are single-use; a used chip goes to the discard pile and
   you draw a replacement. Empty folder? The discard pile reshuffles.
-- Attack chips need a valid target in range — if there isn't one,
-  the chip **fizzles for free** (kept, no turn spent).
+- **Aiming:** every attack chip has a shape built from your
+  *facing* — cannons fire a straight line (walls block, first
+  virus eats it), Sword hits the tile in front, WideSwd the
+  3-tile arc, LongSwd pierces 2 tiles, MiniBomb lobs a 3×3
+  explosion 3 ahead, Spreadr blasts a 3×3 two ahead.
+  Highlight a chip in the folder and its area **previews in
+  yellow** on the map; swing your facing around and watch it move.
+- Any attack that lands — chip, BugBuster, or a virus hitting
+  *you* — **flashes its tiles red** for half a second.
+- Attack chips need at least one virus inside their shape —
+  if there isn't one, the chip **fizzles for free** (kept, no turn spent).
 - **Discarding:** press `Tab`, move with `↑`/`↓`, press `Space`
   to mark any number of chips (`[x]`), select **DISCARD MARKED**
   and press `Enter`. You draw that many fresh chips —
@@ -102,7 +112,10 @@ Undernet Core → Firewall Catacombs → **The Null Abyss**.
 
 `cargo test` covers the important promises: hand starts at 5,
 the dive point is always reachable, multi-discard refills and
-costs a turn, and a heal chip at full HP doesn't eat your turn.
+costs a turn, a heal chip at full HP doesn't eat your turn,
+facing never costs a turn, cannons hit only the first virus in
+the facing line, and the yellow preview / red flash actually
+render. Set `BUGDIVE_SEED=<n>` to reproduce a run exactly.
 
 ## Roadmap ideas
 

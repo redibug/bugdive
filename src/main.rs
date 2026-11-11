@@ -14,10 +14,36 @@ mod rng;
 mod ui;
 mod virus;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use std::time::Duration;
+
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use game::{Focus, Game};
 
+/// Facing keys: WASD (either case) and Shift+arrows. Facing is FREE —
+/// it never spends a turn — and works in both map and chip focus, so
+/// you can swing your aim around while the folder is open and watch
+/// the yellow preview follow.
+fn facing_from_key(key: &KeyEvent) -> Option<(i32, i32)> {
+    match key.code {
+        KeyCode::Char('w') | KeyCode::Char('W') => Some((0, -1)),
+        KeyCode::Char('s') | KeyCode::Char('S') => Some((0, 1)),
+        KeyCode::Char('a') | KeyCode::Char('A') => Some((-1, 0)),
+        KeyCode::Char('d') | KeyCode::Char('D') => Some((1, 0)),
+        KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => Some((0, -1)),
+        KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => Some((0, 1)),
+        KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => Some((-1, 0)),
+        KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => Some((1, 0)),
+        _ => None,
+    }
+}
+
 fn seed_from_clock() -> u64 {
+    // BUGDIVE_SEED=<n> makes a run reproducible (bug reports, tests).
+    if let Ok(s) = std::env::var("BUGDIVE_SEED") {
+        if let Ok(n) = s.trim().parse::<u64>() {
+            return n;
+        }
+    }
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| (d.as_nanos() & 0xFFFF_FFFF_FFFF_FFFF) as u64)
@@ -36,6 +62,16 @@ fn run(terminal: &mut ratatui::DefaultTerminal, game: &mut Game) -> std::io::Res
     loop {
         terminal.draw(|f| ui::draw(f, game))?;
 
+        // Poll (not blocking read) so the 0.5s attack flash clears on
+        // time even when nobody is pressing anything.
+        let timeout = if game.flash_active() {
+            Duration::from_millis(50)
+        } else {
+            Duration::from_millis(250)
+        };
+        if !event::poll(timeout)? {
+            continue;
+        }
         let Event::Key(key) = event::read()? else {
             continue; // resize etc: just redraw
         };
@@ -54,6 +90,12 @@ fn run(terminal: &mut ratatui::DefaultTerminal, game: &mut Game) -> std::io::Res
                 KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => return Ok(()),
                 _ => {}
             }
+            continue;
+        }
+
+        // Facing first: free, turnless, both focuses.
+        if let Some((dx, dy)) = facing_from_key(&key) {
+            game.face(dx, dy);
             continue;
         }
 
@@ -106,18 +148,7 @@ fn handle_map_key(game: &mut Game, code: KeyCode) -> Flow {
         KeyCode::Char('n') | KeyCode::Char('N') => {
             game.try_move(1, 1);
         }
-        KeyCode::Char('w') => {
-            game.try_move(0, -1);
-        }
-        KeyCode::Char('s') => {
-            game.try_move(0, 1);
-        }
-        KeyCode::Char('a') => {
-            game.try_move(-1, 0);
-        }
-        KeyCode::Char('d') => {
-            game.try_move(1, 0);
-        }
+        // (WASD is facing now, intercepted in run() — never movement.)
         KeyCode::Char('.') | KeyCode::Char(' ') => game.wait_turn(),
         KeyCode::Char('>') => game.descend(),
         KeyCode::Enter if game.on_stairs() => game.descend(),
@@ -163,9 +194,8 @@ fn handle_sidebar_key(game: &mut Game, code: KeyCode) -> Flow {
                 game.discard_marked();
             }
         }
-        KeyCode::Char('D') => {
-            game.sidebar_sel = game.hand.len(); // jump to DISCARD
-        }
+        // (Shift+D / 'D' is facing-right now, intercepted in run().
+        //  The DISCARD row is one ↓ past the last chip — selection wraps.)
         _ => {}
     }
     Flow::Stay

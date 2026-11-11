@@ -138,13 +138,28 @@ fn draw_map(frame: &mut Frame, area: Rect, g: &Game) {
     let cam_x = (g.player.0 - vw / 2).clamp(0, (crate::map::MAP_W - vw).max(0));
     let cam_y = (g.player.1 - vh / 2).clamp(0, (crate::map::MAP_H - vh).max(0));
 
+    // Aiming preview: while a chip is highlighted in the folder, its
+    // area of effect glows yellow on the map.
+    let preview: Vec<(i32, i32)> = if g.focus == Focus::Sidebar && g.sidebar_sel < g.hand.len() {
+        g.chip_tiles(g.hand[g.sidebar_sel])
+    } else {
+        Vec::new()
+    };
+    let flash_on = g.flash_active();
+
     let buf = frame.buffer_mut();
     for sy in 0..vh {
         for sx in 0..vw {
             let (wx, wy) = (cam_x + sx, cam_y + sy);
             let cell_x = inner.x + sx as u16;
             let cell_y = inner.y + sy as u16;
-            let (ch, style) = cell_for(g, wx, wy);
+            let (ch, mut style) = cell_for(g, wx, wy);
+            // Attack flash wins over the preview: red for half a second.
+            if flash_on && g.flash_tiles.contains(&(wx, wy)) {
+                style = style.bg(Color::Red).fg(Color::White);
+            } else if preview.contains(&(wx, wy)) {
+                style = style.bg(Color::Yellow).fg(Color::Black);
+            }
             buf.set_string(cell_x, cell_y, ch, style);
         }
     }
@@ -373,6 +388,7 @@ fn draw_controls(frame: &mut Frame, area: Rect, g: &Game) {
     let text = if g.focus == Focus::Map {
         vec![
             Line::from(" move: arrows / hjkl (+ yubn diagonals)"),
+            Line::from(" face: WASD / Shift+arrows (free, no turn)"),
             Line::from(" bump a virus: BugBuster attack"),
             Line::from(" 1-5 use chip · Tab folder · . wait"),
             Line::from(" > descend (on dive point) · q quit"),
@@ -380,6 +396,7 @@ fn draw_controls(frame: &mut Frame, area: Rect, g: &Game) {
     } else {
         vec![
             Line::from(" ↑↓ / jk: select chip"),
+            Line::from(" WASD / Shift+arrows: aim — preview is yellow"),
             Line::from(" Space / x: mark for discard"),
             Line::from(" Enter: use chip / run DISCARD"),
             Line::from(" Tab / Esc: back to the map"),
@@ -401,6 +418,50 @@ fn draw_log(frame: &mut Frame, area: Rect, g: &Game) {
         .collect();
     let p = Paragraph::new(visible).block(Block::default().borders(Borders::ALL).title(" LOG "));
     frame.render_widget(p, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::Game;
+    use crate::map::Tile;
+    use crate::virus::Virus;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn count_bg(g: &Game, color: Color) -> usize {
+        let backend = TestBackend::new(120, 38);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| draw(f, g)).unwrap();
+        let buf = term.backend().buffer().clone();
+        buf.content.iter().filter(|c| c.bg == color).count()
+    }
+
+    #[test]
+    fn highlighted_chip_previews_yellow_and_attack_flashes_red() {
+        let mut g = Game::new(11);
+        // Find an open eastward run and stage a cannon shot.
+        let mut spot = None;
+        'outer: for y in 1..crate::map::MAP_H - 1 {
+            for x in 1..crate::map::MAP_W - 8 {
+                if (0..7).all(|i| g.sector.tile(x + i, y) == Tile::Floor) {
+                    spot = Some((x, y));
+                    break 'outer;
+                }
+            }
+        }
+        let Some((x, y)) = spot else { return };
+        g.viruses.clear();
+        g.player = (x + 3, y);
+        g.face(1, 0);
+        g.viruses.push(Virus::new(2, (x + 6, y), 1));
+        g.hand[0] = 0; // Cannon
+        g.focus = Focus::Sidebar;
+        g.sidebar_sel = 0;
+        assert!(count_bg(&g, Color::Yellow) >= 6, "firing line previews in yellow");
+        assert!(count_bg(&g, Color::Red) == 0, "no flash before any attack");
+        assert!(g.use_chip(0));
+        assert!(count_bg(&g, Color::Red) >= 1, "the hit tile flashes red");
+    }
 }
 
 fn draw_game_over(frame: &mut Frame, area: Rect, g: &Game) {

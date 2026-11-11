@@ -30,10 +30,23 @@ deletion; the score is how deep + how much you deleted.
 - **Bottom:** log, 5 visible lines.
 
 ## Chips (v0.1)
-15 kinds, 31-chip folder. Targeting is automatic-nearest so a
-turn is one keypress — the tactics live in range, positioning
-and hand cycling, not in a targeting cursor. (A targeting
-cursor is a v0.2 candidate for cannon-line chips.)
+15 kinds, 31-chip folder. (v0.1 targeting was automatic-nearest;
+v0.2 replaced it with aiming, below.)
+
+## Chips — aiming (v0.2, Mel's spec)
+- Facing is a free action: WASD or Shift+arrows, in map focus and
+  in chip focus. Moving also sets facing, as you'd expect.
+- Every attack chip's shape is built from facing: lines (cannon
+  family, ShockWav, ZapRing), front tile (Sword), 3-tile arc
+  (WideSwd), 2-tile pierce (LongSwd), lobbed 3x3 (MiniBomb),
+  centered 3x3 (Spreadr). Support chips target Bugchan herself.
+- Highlighting a chip in the folder previews its shape in
+  **yellow** on the map, live as facing changes.
+- Any attack that fires flashes its affected tiles **red** for
+  0.5s — player chips, the BugBuster, and enemy attacks alike.
+  Same-instant attacks union into one flash so none is overwritten
+  before it can be drawn. The main loop polls on a short timeout
+  while a flash is live so it clears on schedule.
 
 ## Viruses (v0.1)
 Greedy chase within 8 tiles, wander otherwise. CanoDrone adds

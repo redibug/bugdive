@@ -4,10 +4,15 @@
 //! chip, or by discarding. Bumping a wall is free (and noisy). After
 //! every spent turn, every virus gets to act.
 
+use std::time::{Duration, Instant};
+
 use crate::chip::{build_folder, Effect, CHIPS, HAND_SIZE};
 use crate::map::{self, ItemKind, Sector, Tile};
 use crate::rng::Rng;
 use crate::virus::{roll_kind, Virus};
+
+/// How long attack flashes stay on the map.
+pub const FLASH_TIME: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Focus {
@@ -54,6 +59,9 @@ pub struct Game {
     pub sidebar_sel: usize,
     pub log: Vec<String>,
     pub game_over: bool,
+    /// Tiles hit by the most recent attack, flashed red until this time.
+    pub flash_tiles: Vec<(i32, i32)>,
+    pub flash_until: Option<Instant>,
 }
 
 impl Game {
@@ -84,6 +92,8 @@ impl Game {
             sidebar_sel: 0,
             log: Vec::new(),
             game_over: false,
+            flash_tiles: Vec::new(),
+            flash_until: None,
         };
         game.new_floor(true);
         game.draw_to_full();
@@ -98,6 +108,110 @@ impl Game {
         if self.log.len() > 100 {
             self.log.drain(..self.log.len() - 100);
         }
+    }
+
+    // ---------- aiming ----------
+
+    /// Change facing WITHOUT moving and WITHOUT spending a turn.
+    /// (WASD / Shift+arrows — wired up in main.rs for both focuses.)
+    pub fn face(&mut self, dx: i32, dy: i32) {
+        if (dx, dy) != (0, 0) {
+            self.facing = (dx, dy);
+        }
+    }
+
+    /// Flash tiles red for half a second (any attack — chips, buster,
+    /// enemy attacks). The UI reads this; the main loop polls so the
+    /// flash clears on time even with no keypresses.
+    pub fn set_flash(&mut self, tiles: Vec<(i32, i32)>) {
+        // Attacks that resolve in the same instant (a chip + the virus
+        // turns it triggers) union into one flash, so nothing is lost
+        // before it can be drawn. A genuinely new attack later replaces.
+        if self.flash_active() {
+            for t in tiles {
+                if !self.flash_tiles.contains(&t) {
+                    self.flash_tiles.push(t);
+                }
+            }
+        } else {
+            self.flash_tiles = tiles;
+        }
+        self.flash_until = Some(Instant::now() + FLASH_TIME);
+    }
+
+    pub fn flash_active(&self) -> bool {
+        self.flash_until.map(|t| Instant::now() < t).unwrap_or(false)
+    }
+
+    /// Tiles a straight line from `from` along facing covers, stopping
+    /// before the first wall (the wall itself is not included).
+    fn line_from(&self, from: (i32, i32), range: i32) -> Vec<(i32, i32)> {
+        let mut tiles = Vec::new();
+        let (dx, dy) = self.facing;
+        for step in 1..=range {
+            let p = (from.0 + dx * step, from.1 + dy * step);
+            if self.sector.tile(p.0, p.1) == Tile::Wall {
+                break;
+            }
+            tiles.push(p);
+        }
+        tiles
+    }
+
+    /// Walk `dist` tiles along facing (stopping before a wall) and
+    /// return the landing tile — at worst, Bugchan's own tile.
+    fn lob_landing(&self, dist: i32) -> (i32, i32) {
+        let line = self.line_from(self.player, dist);
+        line.last().copied().unwrap_or(self.player)
+    }
+
+    fn box3(center: (i32, i32)) -> Vec<(i32, i32)> {
+        let mut v = Vec::new();
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                v.push((center.0 + dx, center.1 + dy));
+            }
+        }
+        v
+    }
+
+    /// The area of effect of a chip, given the current facing: these
+    /// are the tiles the UI previews in yellow when the chip is
+    /// highlighted, and the tiles an attack can actually hit.
+    pub fn chip_tiles(&self, chip_def: usize) -> Vec<(i32, i32)> {
+        let (px, py) = self.player;
+        let (fx, fy) = self.facing;
+        match CHIPS[chip_def].effect {
+            Effect::Line { range, .. } | Effect::LineStun { range, .. } => {
+                self.line_from(self.player, range)
+            }
+            Effect::FrontSingle { .. } => vec![(px + fx, py + fy)],
+            Effect::FrontArc { .. } => {
+                // front, plus the two front diagonals (perpendicular offsets)
+                let (ox, oy) = (fy, fx); // perpendicular unit (works for cardinal facing)
+                vec![
+                    (px + fx - ox, py + fy - oy),
+                    (px + fx, py + fy),
+                    (px + fx + ox, py + fy + oy),
+                ]
+            }
+            Effect::FrontLine { len, .. } => self.line_from(self.player, len),
+            Effect::Bomb { dist, .. } => Self::box3(self.lob_landing(dist)),
+            Effect::Blast { dist, .. } => Self::box3(self.lob_landing(dist)),
+            Effect::Heal { .. } | Effect::Barrier { .. } | Effect::Invis { .. } => {
+                vec![self.player]
+            }
+        }
+    }
+
+    /// Indices of viruses standing on any of `tiles`.
+    fn viruses_in(&self, tiles: &[(i32, i32)]) -> Vec<usize> {
+        self.viruses
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| tiles.contains(&v.pos))
+            .map(|(i, _)| i)
+            .collect()
     }
 
     // ---------- floor ----------
@@ -241,84 +355,47 @@ impl Game {
                 self.log(format!("{name}! Bugchan fades into ghost data for {turns} turns."));
                 true
             }
-            Effect::Damage { amount, range } => match self.nearest_virus(range) {
-                Some(v) => {
-                    self.hit_virus(v, amount, name);
-                    true
+            Effect::Line { amount, .. } | Effect::LineStun { amount, .. } => {
+                let stun = matches!(def.effect, Effect::LineStun { .. });
+                let tiles = self.chip_tiles(self.hand[idx]);
+                match tiles.iter().position(|&p| self.virus_at(p).is_some()) {
+                    Some(hit_at) => {
+                        let v = self.virus_at(tiles[hit_at]).unwrap();
+                        self.set_flash(tiles[..=hit_at].to_vec());
+                        if stun {
+                            self.viruses[v].stun = 1;
+                        }
+                        self.hit_virus(v, amount, name);
+                        true
+                    }
+                    None => {
+                        self.log(format!(
+                            "{name}: no virus in your firing line. Aim with WASD / Shift+arrows. Chip kept."
+                        ));
+                        false
+                    }
                 }
-                None => {
-                    self.log(format!("{name}: no virus within range {range}. Chip kept."));
+            }
+            Effect::FrontSingle { amount }
+            | Effect::FrontArc { amount }
+            | Effect::FrontLine { amount, .. }
+            | Effect::Bomb { amount, .. }
+            | Effect::Blast { amount, .. } => {
+                let tiles = self.chip_tiles(self.hand[idx]);
+                let targets = self.viruses_in(&tiles);
+                if targets.is_empty() {
+                    self.log(format!(
+                        "{name}: no virus in the area. Aim with WASD / Shift+arrows. Chip kept."
+                    ));
                     false
-                }
-            },
-            Effect::AreaDamage { amount, range } => match self.nearest_virus(range) {
-                Some(v) => {
-                    let center = self.viruses[v].pos;
-                    let targets: Vec<usize> = self
-                        .viruses
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, t)| (t.pos.0 - center.0).abs() + (t.pos.1 - center.1).abs() <= 1)
-                        .map(|(i, _)| i)
-                        .collect();
+                } else {
+                    self.set_flash(tiles);
                     for t in targets {
                         self.hit_virus(t, amount, name);
                     }
                     true
                 }
-                None => {
-                    self.log(format!("{name}: no virus within range {range}. Chip kept."));
-                    false
-                }
-            },
-            Effect::AdjacentSingle { amount } => {
-                let adj: Option<usize> = self
-                    .viruses
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, v)| (v.pos.0 - self.player.0).abs() + (v.pos.1 - self.player.1).abs() == 1)
-                    .max_by_key(|(_, v)| v.hp)
-                    .map(|(i, _)| i);
-                match adj {
-                    Some(v) => {
-                        self.hit_virus(v, amount, name);
-                        true
-                    }
-                    None => {
-                        self.log(format!("{name}: no virus next to you. Chip kept."));
-                        false
-                    }
-                }
             }
-            Effect::AdjacentAll { amount } => {
-                let adj: Vec<usize> = self
-                    .viruses
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, v)| (v.pos.0 - self.player.0).abs() + (v.pos.1 - self.player.1).abs() == 1)
-                    .map(|(i, _)| i)
-                    .collect();
-                if adj.is_empty() {
-                    self.log(format!("{name}: no virus next to you. Chip kept."));
-                    false
-                } else {
-                    for v in adj {
-                        self.hit_virus(v, amount, name);
-                    }
-                    true
-                }
-            }
-            Effect::StunDamage { amount, range } => match self.nearest_virus(range) {
-                Some(v) => {
-                    self.viruses[v].stun = 1;
-                    self.hit_virus(v, amount, name);
-                    true
-                }
-                None => {
-                    self.log(format!("{name}: no virus within range {range}. Chip kept."));
-                    false
-                }
-            },
         };
         if !fired {
             return false;
@@ -329,16 +406,6 @@ impl Game {
         self.focus = Focus::Map;
         self.end_turn(true);
         true
-    }
-
-    fn nearest_virus(&self, range: i32) -> Option<usize> {
-        self.viruses
-            .iter()
-            .enumerate()
-            .map(|(i, v)| (i, (v.pos.0 - self.player.0).abs() + (v.pos.1 - self.player.1).abs()))
-            .filter(|(_, d)| *d <= range)
-            .min_by_key(|(_, d)| *d)
-            .map(|(i, _)| i)
     }
 
     fn hit_virus(&mut self, idx: usize, amount: i32, source: &str) {
@@ -386,6 +453,7 @@ impl Game {
         if let Some(v) = self.virus_at((nx, ny)) {
             // Bump attack: the humble Bug Buster.
             let dmg = self.buster;
+            self.set_flash(vec![(nx, ny)]);
             self.hit_virus(v, dmg, "BugBuster");
             self.end_turn(true);
             return true;
@@ -477,6 +545,7 @@ impl Game {
             if self.invis_turns <= 0 && dist == 1 {
                 let dmg = self.viruses[i].dmg;
                 let n = self.viruses[i].name().to_string();
+                self.set_flash(vec![self.player]);
                 self.damage_player(dmg, &n);
                 continue;
             }
@@ -485,6 +554,18 @@ impl Game {
                 if aligned && self.line_clear(vpos, self.player) {
                     let dmg = self.viruses[i].dmg;
                     let n = self.viruses[i].name().to_string();
+                    // The shot's whole path flashes, ending on Bugchan.
+                    let (dx, dy) = (
+                        (self.player.0 - vpos.0).signum(),
+                        (self.player.1 - vpos.1).signum(),
+                    );
+                    let mut path = Vec::new();
+                    let mut p = vpos;
+                    while p != self.player {
+                        p = (p.0 + dx, p.1 + dy);
+                        path.push(p);
+                    }
+                    self.set_flash(path);
                     self.damage_player(dmg, &format!("{n} (shot)"));
                     continue;
                 }
@@ -608,6 +689,88 @@ mod tests {
         let hp0 = g.viruses[0].hp;
         assert!(g.try_move(1, 0));
         assert!(g.viruses.is_empty() || g.viruses[0].hp < hp0 || g.kills > 0);
+    }
+
+    /// Find (x, y) starting a run of `n` consecutive floor tiles eastward.
+    fn open_row(g: &Game, n: i32) -> Option<(i32, i32)> {
+        for y in 1..crate::map::MAP_H - 1 {
+            for x in 1..crate::map::MAP_W - n - 1 {
+                if (0..n).all(|i| g.sector.tile(x + i, y) == Tile::Floor) {
+                    return Some((x, y));
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn facing_is_free() {
+        let mut g = Game::new(11);
+        let t = g.turn;
+        g.face(0, 1);
+        g.face(-1, 0);
+        assert_eq!(g.turn, t, "facing never spends a turn");
+        assert_eq!(g.facing, (-1, 0));
+    }
+
+    #[test]
+    fn cannon_hits_first_virus_in_facing_line_only() {
+        let mut g = Game::new(11);
+        let Some((x, y)) = open_row(&g, 7) else { return };
+        g.viruses.clear();
+        g.sector.items.clear();
+        g.player = (x + 3, y);
+        g.face(1, 0);
+        // Mett (55 HP) 3 east — in the line. Another Mett 2 west — behind.
+        g.viruses.push(Virus::new(2, (x + 6, y), 1));
+        g.viruses.push(Virus::new(2, (x + 1, y), 1));
+        g.hand[0] = 0; // Cannon, 40 DMG line6
+        assert!(g.use_chip(0));
+        assert_eq!(g.viruses[0].hp, 15, "east Mett took the cannon hit");
+        assert_eq!(g.viruses[1].hp, 55, "west Mett (behind) untouched");
+        assert!(g.flash_active(), "the attack flashes");
+        assert!(g.flash_tiles.contains(&(x + 6, y)), "flash covers the hit tile");
+        // Swing around (free) and shoot the other one.
+        g.face(-1, 0);
+        g.hand[0] = 0;
+        assert!(g.use_chip(0));
+        assert_eq!(g.viruses[1].hp, 15);
+    }
+
+    #[test]
+    fn cannon_fizzles_when_line_is_empty() {
+        let mut g = Game::new(11);
+        let Some((x, y)) = open_row(&g, 7) else { return };
+        g.viruses.clear();
+        g.player = (x + 3, y);
+        g.face(1, 0);
+        g.viruses.push(Virus::new(2, (x + 1, y), 1)); // behind (west)
+        let t = g.turn;
+        g.hand[0] = 0;
+        assert!(!g.use_chip(0), "no virus in the east line: fizzle");
+        assert_eq!(g.turn, t, "fizzle spends no turn");
+        assert_eq!(g.hand.len(), HAND_SIZE);
+    }
+
+    #[test]
+    fn wideswd_hits_the_front_arc() {
+        let mut g = Game::new(11);
+        let Some((x, y)) = open_row(&g, 5) else { return };
+        // Need the front-diagonal tiles to be floor too.
+        if g.sector.tile(x + 3, y - 1) != Tile::Floor || g.sector.tile(x + 3, y + 1) != Tile::Floor {
+            return;
+        }
+        g.viruses.clear();
+        g.player = (x + 2, y);
+        g.face(1, 0);
+        g.viruses.push(Virus::new(2, (x + 3, y), 1)); // front
+        g.viruses.push(Virus::new(2, (x + 3, y + 1), 1)); // front-diagonal
+        g.viruses.push(Virus::new(2, (x + 1, y), 1)); // behind
+        g.hand[0] = 4; // WideSwd, 70 DMG arc — Metts (55) die from it
+        assert!(g.use_chip(0));
+        assert_eq!(g.kills, 2, "front + diagonal deleted, behind survives");
+        assert_eq!(g.viruses.len(), 1);
+        assert_eq!(g.viruses[0].pos, (x + 1, y));
     }
 
     #[test]

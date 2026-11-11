@@ -7,18 +7,27 @@
 
 use crate::rng::Rng;
 
+/// Chip shapes. Since the aiming update, every attack shape is built
+/// from Bugchan's *facing* — face with WASD / Shift+arrows (free, no
+/// turn), highlight a chip in the folder, and the map previews its
+/// area of effect in yellow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Effect {
-    /// Hit the nearest virus within `range` (Manhattan).
-    Damage { amount: i32, range: i32 },
-    /// Hit the nearest virus within `range`, plus every virus next to it.
-    AreaDamage { amount: i32, range: i32 },
-    /// Hit the single strongest virus standing next to Bugchan.
-    AdjacentSingle { amount: i32 },
-    /// Hit every virus standing next to Bugchan.
-    AdjacentAll { amount: i32 },
-    /// Damage + the target skips its next turn.
-    StunDamage { amount: i32, range: i32 },
+    /// Fire in a straight line along facing, up to `range` tiles,
+    /// stopped by walls. Hits the FIRST virus in the line.
+    Line { amount: i32, range: i32 },
+    /// Like Line, plus the victim skips its next turn.
+    LineStun { amount: i32, range: i32 },
+    /// The single tile directly in front of Bugchan.
+    FrontSingle { amount: i32 },
+    /// The three tiles in front: front-left, front, front-right.
+    FrontArc { amount: i32 },
+    /// `len` tiles straight ahead; hits viruses on ALL of them (pierce).
+    FrontLine { amount: i32, len: i32 },
+    /// Lobbed `dist` tiles ahead (stops before a wall); explodes 3x3.
+    Bomb { amount: i32, dist: i32 },
+    /// A 3x3 blast centered `dist` tiles ahead.
+    Blast { amount: i32, dist: i32 },
     Heal { amount: i32 },
     /// Absorbing shield, in HP.
     Barrier { amount: i32 },
@@ -35,14 +44,16 @@ pub struct ChipDef {
 }
 
 impl ChipDef {
-    /// One-line effect summary for the sidebar list, e.g. "40 DMG rng6".
+    /// One-line effect summary for the sidebar list, e.g. "40 DMG line6".
     pub fn summary(&self) -> String {
         match self.effect {
-            Effect::Damage { amount, range } => format!("{amount} DMG rng{range}"),
-            Effect::AreaDamage { amount, range } => format!("{amount} DMG area rng{range}"),
-            Effect::AdjacentSingle { amount } => format!("{amount} DMG adj"),
-            Effect::AdjacentAll { amount } => format!("{amount} DMG all-adj"),
-            Effect::StunDamage { amount, range } => format!("{amount} DMG+stun rng{range}"),
+            Effect::Line { amount, range } => format!("{amount} DMG line{range}"),
+            Effect::LineStun { amount, range } => format!("{amount} DMG+stun line{range}"),
+            Effect::FrontSingle { amount } => format!("{amount} DMG front"),
+            Effect::FrontArc { amount } => format!("{amount} DMG arc"),
+            Effect::FrontLine { amount, len } => format!("{amount} DMG front x{len}"),
+            Effect::Bomb { amount, dist } => format!("{amount} DMG bomb@{dist}"),
+            Effect::Blast { amount, dist } => format!("{amount} DMG blast@{dist}"),
             Effect::Heal { amount } => format!("heal {amount}"),
             Effect::Barrier { amount } => format!("barrier {amount}"),
             Effect::Invis { turns } => format!("invis {turns}t"),
@@ -51,16 +62,16 @@ impl ChipDef {
 }
 
 pub const CHIPS: &[ChipDef] = &[
-    ChipDef { name: "Cannon",   code: 'C', desc: "A trusty cannon blast. Hits the nearest virus in range.", effect: Effect::Damage { amount: 40, range: 6 } },
-    ChipDef { name: "HiCannon", code: 'C', desc: "The cannon's bigger sister. Same range, twice the ouch.", effect: Effect::Damage { amount: 80, range: 6 } },
-    ChipDef { name: "M-Cannon", code: 'M', desc: "Military-grade cannon. Rare, rude, delightful.", effect: Effect::Damage { amount: 120, range: 6 } },
-    ChipDef { name: "Sword",    code: 'S', desc: "A clean energy blade. Hits the toughest virus next to you.", effect: Effect::AdjacentSingle { amount: 80 } },
-    ChipDef { name: "WideSwd",  code: 'S', desc: "A sweeping blade arc. Hits every virus next to you.", effect: Effect::AdjacentAll { amount: 70 } },
-    ChipDef { name: "LongSwd",  code: 'L', desc: "An extra-long blade for an extra-bad neighbour.", effect: Effect::AdjacentSingle { amount: 110 } },
-    ChipDef { name: "MiniBomb", code: 'B', desc: "Lobs a little bomb at the nearest virus — splash hits its neighbours.", effect: Effect::AreaDamage { amount: 60, range: 5 } },
-    ChipDef { name: "Spreadr",  code: 'P', desc: "Scattershot. Modest damage, but it splashes.", effect: Effect::AreaDamage { amount: 40, range: 6 } },
-    ChipDef { name: "ShockWav", code: 'W', desc: "A shockwave that travels far across the data plane.", effect: Effect::Damage { amount: 60, range: 9 } },
-    ChipDef { name: "ZapRing",  code: 'Z', desc: "A crackling ring. Damage now, and the virus loses its next turn.", effect: Effect::StunDamage { amount: 50, range: 5 } },
+    ChipDef { name: "Cannon",   code: 'C', desc: "A trusty cannon blast. Fires in a straight line the way you're facing — first virus it meets eats it.", effect: Effect::Line { amount: 40, range: 6 } },
+    ChipDef { name: "HiCannon", code: 'C', desc: "The cannon's bigger sister. Same line, twice the ouch.", effect: Effect::Line { amount: 80, range: 6 } },
+    ChipDef { name: "M-Cannon", code: 'M', desc: "Military-grade cannon. Rare, rude, delightful.", effect: Effect::Line { amount: 120, range: 6 } },
+    ChipDef { name: "Sword",    code: 'S', desc: "A clean energy blade. Hits the tile right in front of you.", effect: Effect::FrontSingle { amount: 80 } },
+    ChipDef { name: "WideSwd",  code: 'S', desc: "A sweeping blade arc — the three tiles in front of you.", effect: Effect::FrontArc { amount: 70 } },
+    ChipDef { name: "LongSwd",  code: 'L', desc: "An extra-long blade. Stabs through two tiles in a line.", effect: Effect::FrontLine { amount: 110, len: 2 } },
+    ChipDef { name: "MiniBomb", code: 'B', desc: "Lobs a little bomb three tiles ahead. Explodes in a 3x3 — mind the splash (it only hurts viruses).", effect: Effect::Bomb { amount: 60, dist: 3 } },
+    ChipDef { name: "Spreadr",  code: 'P', desc: "Scattershot. A 3x3 blast centered two tiles ahead.", effect: Effect::Blast { amount: 40, dist: 2 } },
+    ChipDef { name: "ShockWav", code: 'W', desc: "A shockwave that travels far down your facing line.", effect: Effect::Line { amount: 60, range: 9 } },
+    ChipDef { name: "ZapRing",  code: 'Z', desc: "A crackling ring down your facing line. Damage now, and the virus loses its next turn.", effect: Effect::LineStun { amount: 50, range: 5 } },
     ChipDef { name: "Recov30",  code: 'R', desc: "Patch data. Restores 30 HP.", effect: Effect::Heal { amount: 30 } },
     ChipDef { name: "Recov80",  code: 'R', desc: "Serious patch data. Restores 80 HP.", effect: Effect::Heal { amount: 80 } },
     ChipDef { name: "Recov120", code: '*', desc: "A full hot-fix, couriered from the surface. Restores 120 HP.", effect: Effect::Heal { amount: 120 } },
